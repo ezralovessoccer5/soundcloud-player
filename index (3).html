@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoundCloud Player — Standalone Test</title>
+  <style>
+    :root {font-family:system-ui,Segoe UI,Roboto,sans-serif;color:#f4f6fa;background:#11141a}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 90% 2%,#452716,transparent 36%),#11141a}
+    main{max-width:840px;margin:0 auto;padding:34px 16px 60px}
+    h1{margin:0 0 7px;font-size:clamp(24px,5vw,34px)}
+    .sub,.hint{color:#aeb7c6} .sub{margin:0 0 24px}
+    .panel{padding:22px;border-radius:18px;background:#1b2029;border:1px solid #323944;box-shadow:0 12px 28px #0002}
+    label{display:block;font-weight:650;margin-bottom:8px}.row{display:flex;gap:9px;flex-wrap:wrap}
+    input{min-width:150px;flex:1;padding:12px 14px;color:#fff;background:#12151b;border:1px solid #535b68;border-radius:9px;font:inherit}
+    button,.link{display:inline-block;border:1px solid #48515f;background:#2b323c;color:#fff;font:inherit;font-weight:600;text-decoration:none;padding:10px 14px;border-radius:9px;cursor:pointer}
+    button:hover,.link:hover{background:#3b4552} button:disabled{opacity:.45;cursor:not-allowed}
+    .primary{border-color:#ff650f;background:#ff650f;color:#161616}.primary:hover{background:#ff803a}
+    iframe{margin:19px 0 13px;width:100%;height:240px;border:0;border-radius:9px;background:white}
+    #status{min-height:24px;font-size:14px;color:#f3c79b;margin:15px 0 0}
+    .hint{font-size:13px;margin:10px 0 0;line-height:1.6}
+    #now{color:#d6dee9;font-weight:650;margin:5px 0 10px}
+    .controls{display:flex;gap:9px;flex-wrap:wrap}.controls button{flex:1;min-width:90px}
+    .links{display:flex;gap:9px;margin-top:14px;flex-wrap:wrap}.link{font-size:13px}
+    a{color:#ffb079} @media(max-width:540px){.panel{padding:14px}.row button{width:100%}}
+  </style>
+</head>
+<body><main>
+  <h1>🎧 SoundCloud Player</h1>
+  <p class="sub">Standalone HTML test — no Google Apps Script sandbox</p>
+  <section class="panel">
+    <label for="track">Public SoundCloud track or playlist URL</label>
+    <div class="row">
+      <input id="track" type="url" value="https://soundcloud.com/forss/flickermood" spellcheck="false">
+      <button id="load" type="button" class="primary">Load player</button>
+    </div>
+    <p class="hint">Starts with SoundCloud's documented test track. Your Likes page may not be an embeddable playlist; use an actual public track or playlist.</p>
+    <iframe id="player" title="SoundCloud official embedded player" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    <div id="now">Waiting for player…</div>
+    <div class="controls">
+      <button id="prev" disabled>⏮ Previous</button>
+      <button id="play" class="primary" disabled>▶ Play</button>
+      <button id="pause" disabled>⏸ Pause</button>
+      <button id="next" disabled>Next ⏭</button>
+    </div>
+    <p id="status" role="status">Loading player…</p>
+    <div class="links">
+      <a class="link" id="openWidget" href="#" target="_blank" rel="noopener noreferrer">Open official player separately</a>
+      <a class="link" id="openTrack" href="https://soundcloud.com/forss/flickermood" target="_blank" rel="noopener noreferrer">Open track on SoundCloud</a>
+    </div>
+    <p class="hint">If the player is blocked here too, open the official player in a new tab. This page only embeds SoundCloud and cannot bypass network filtering or SoundCloud's embed restrictions.</p>
+  </section>
+</main>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const frame = $('player');
+  const buttons = ['prev','play','pause','next'];
+  let widget = null;
+  let scriptReady = false;
+  let request = 0;
+
+  function message(t){$('status').textContent=t}
+  function enable(v){buttons.forEach(id => {$(id).disabled = !v})}
+  function valid(raw){
+    try {const u=new URL(raw);return u.protocol==='https:' &&
+      ['soundcloud.com','www.soundcloud.com'].includes(u.hostname) && u.pathname.length>1}
+    catch{return false}
+  }
+  function playerUrl(url){
+    const p = new URLSearchParams({url, color:'#ff5500', auto_play:'false', show_artwork:'true', show_user:'true', visual:'false'});
+    return 'https://w.soundcloud.com/player/?'+p.toString();
+  }
+  async function officialUrl(trackUrl){
+    // SoundCloud's oEmbed API returns the canonical widget URL for a track or playlist.
+    // If it is unavailable, fall back to the documented widget endpoint.
+    try {
+      const res = await fetch('https://soundcloud.com/oembed?format=json&url='+encodeURIComponent(trackUrl));
+      if (!res.ok) throw new Error('oEmbed response '+res.status);
+      const data = await res.json();
+      const doc = new DOMParser().parseFromString(data.html || '', 'text/html');
+      const src = doc.querySelector('iframe')?.getAttribute('src');
+      if (!src) throw new Error('No widget URL');
+      const u = new URL(src);
+      if (u.protocol !== 'https:' || u.hostname !== 'w.soundcloud.com' || u.pathname !== '/player/') throw new Error('Unexpected widget URL');
+      u.searchParams.set('auto_play','false');
+      return u.href;
+    } catch(e) { console.warn('oEmbed unavailable; using standard widget URL:',e);return playerUrl(trackUrl) }
+  }
+  function connectControls(){
+    widget = null; enable(false);
+    if (!scriptReady || !window.SC || !window.SC.Widget) {
+      message('Player loaded. Use its built-in controls. Custom controls require SoundCloud’s optional api.js script.');
+      return;
+    }
+    const current = window.SC.Widget(frame);
+    widget = current;
+    current.bind(window.SC.Widget.Events.READY, () => {
+      if (widget !== current) return;
+      enable(true);
+      message('SoundCloud player connected — try Play.');
+      current.getCurrentSound(s => {$('now').textContent = s ? `${s.title} — ${s.user?.username||'SoundCloud'}`:'SoundCloud player ready'});
+    });
+    current.bind(window.SC.Widget.Events.PLAY, () => {
+      if(widget !== current)return;
+      current.getCurrentSound(s => {$('now').textContent = s ? `${s.title} — ${s.user?.username||'SoundCloud'}`:'Playing'});
+    });
+    current.bind(window.SC.Widget.Events.ERROR, () => {if(widget===current)message('SoundCloud reported a playback error. Try the embedded controls or another public track.')});
+  }
+  async function load(){
+    const trackUrl=$('track').value.trim();
+    if(!valid(trackUrl)){message('Enter an HTTPS soundcloud.com track or playlist URL.');return}
+    const n=++request;
+    $('now').textContent='Waiting for player…';
+    widget=null;enable(false);message('Checking SoundCloud’s official embed URL…');
+    $('openTrack').href=trackUrl;
+    const url=await officialUrl(trackUrl);
+    if(n!==request)return;
+    $('openWidget').href=url;
+    frame.src=url;
+    message('Embed requested. If you see “content is blocked,” open the official player separately.');
+    setTimeout(() => {
+      if(n!==request)return;
+      if (!widget || !scriptReady) message('If you cannot see or play the embedded player, try “Open official player separately” to isolate the iframe issue.');
+    },12000);
+    if(scriptReady)connectControls();
+  }
+  $('load').addEventListener('click',load);
+  $('track').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
+  $('play').addEventListener('click',()=>widget?.play());
+  $('pause').addEventListener('click',()=>widget?.pause());
+  $('next').addEventListener('click',()=>widget?.next());
+  $('prev').addEventListener('click',()=>widget?.prev());
+  const api=document.createElement('script');
+  api.src='https://w.soundcloud.com/player/api.js';
+  api.onload=()=>{scriptReady=true;if(frame.src)connectControls()};
+  api.onerror=()=>{message('Optional SoundCloud control script could not load; the embedded player may still work.')};
+  document.head.appendChild(api);
+  load();
+})();
+</script>
+</body>
+</html>
